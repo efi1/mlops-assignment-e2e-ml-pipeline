@@ -213,10 +213,15 @@ def evaluate_agent():
             "n_instances": agent_result["n_instances"],
             "n_patched": agent_result["n_patched"],
         })
-        if metrics.get("total_instances"):
-            metrics["resolve_rate"] = round(
-                metrics["resolved_instances"] / metrics["total_instances"], 4
-            )
+
+        # the harness reports totals across the whole dataset; override with the
+        # actual number of instances this run evaluated
+        metrics["total_instances"] = metrics.get("n_instances", metrics.get("total_instances"))
+
+        denom = metrics.get("n_instances") or metrics.get("total_instances")
+        if denom:
+            metrics["resolve_rate"] = round(metrics["resolved_instances"] / denom, 4)
+
         (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
         # ---- manifest: hash every file for reproducibility/provenance ----

@@ -27,11 +27,10 @@ RUNS_ROOT = PROJECT_ROOT / "runs"
 
 # Local MLflow file store. Single constant -- swap for a sqlite/remote URI later
 # (Phase 3) without touching any logging code below.
-MLFLOW_TRACKING_URI = f"file:{PROJECT_ROOT / 'mlruns'}"
-MLFLOW_EXPERIMENT = "swebench-agent-eval"
+#MLFLOW_TRACKING_URI = f"file:{PROJECT_ROOT / 'mlruns'}"
+MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
 
-# Agent config file shipped with mini-swe-agent (from mini-swe-bench-batch.sh).
-AGENT_CONFIG = "mini-swe-agent/src/minisweagent/config/benchmarks/swebench.yaml"
+MLFLOW_EXPERIMENT = "swebench-agent-eval"
 
 # Maps the (subset, split) params to the HuggingFace dataset the eval harness
 # loads. Extend this table if you add subsets/splits.
@@ -130,12 +129,20 @@ def evaluate_agent():
         run_dir = _run_dir(config["run_id"])
         agent_out = run_dir / "run-agent"
 
+        agent_config = subprocess.run(
+            ["uv", "run", "python", "-c",
+             "import minisweagent, os; "
+             "print(os.path.join(os.path.dirname(minisweagent.__file__), "
+             "'config', 'benchmarks', 'swebench.yaml'))"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
+        ).stdout.splitlines()[-1].strip()
+
         cmd = [
             "uv", "run", "mini-extra", "swebench",
             "--subset", config["subset"],
             "--split", config["split"],
             "--model", config["model"],
-            "--config", AGENT_CONFIG,
+            "--config", agent_config,
             "--workers", str(config["workers"]),
             "-o", str(agent_out),
         ]

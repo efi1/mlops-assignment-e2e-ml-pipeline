@@ -10,3 +10,10 @@ __pycache__
 
 mini-swe-agent/
 SWE-bench/
+
+mlflow.db
+runs/
+mlruns/
+*.run-*.json
+
+kill-airflow.sh

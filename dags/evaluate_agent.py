@@ -28,7 +28,8 @@ RUNS_ROOT = PROJECT_ROOT / "runs"
 # Local MLflow file store. Single constant -- swap for a sqlite/remote URI later
 # (Phase 3) without touching any logging code below.
 #MLFLOW_TRACKING_URI = f"file:{PROJECT_ROOT / 'mlruns'}"
-MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
+#MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
+MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}")
 
 MLFLOW_EXPERIMENT = "swebench-agent-eval"
 
@@ -53,6 +54,25 @@ def _run_dir(run_id: str) -> Path:
 def _uv_env() -> dict:
     """Environment for subprocesses: inherit everything, keep cost tracking lenient."""
     return {**os.environ, "MSWEA_COST_TRACKING": "ignore_errors"}
+
+
+def _docker_task_cmd() -> list:
+    """docker run prefix for hybrid container-isolated tasks. Volume SOURCE
+    paths are HOST paths (the daemon resolves them on the host via the mounted
+    socket); they are mounted to the same in-container paths the DAG uses so the
+    commands' absolute paths resolve correctly."""
+    image = os.environ.get("TASK_IMAGE", "agent-eval:latest")
+    host_root = os.environ.get("HOST_PROJECT_ROOT", str(PROJECT_ROOT))
+    return [
+        "docker", "run", "--rm",
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{host_root}/runs:/mlops-assignment/runs",
+        "-v", "/home/efov/.config/mini-swe-agent:/root/.config/mini-swe-agent:ro",
+        "-e", f"NEBIUS_API_KEY={os.environ.get('NEBIUS_API_KEY', '')}",
+        "-e", f"MSWEA_COST_TRACKING=ignore_errors",
+        "-w", "/mlops-assignment",
+        image,
+    ]
 
 
 @dag(
@@ -134,6 +154,7 @@ def evaluate_agent():
         run_dir = _run_dir(config["run_id"])
         agent_out = run_dir / "run-agent"
 
+        """
         agent_config = subprocess.run(
             ["uv", "run", "python", "-c",
              "import minisweagent, os; "
@@ -141,7 +162,10 @@ def evaluate_agent():
              "'config', 'benchmarks', 'swebench.yaml'))"],
             cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
         ).stdout.splitlines()[-1].strip()
+        """
 
+
+        """
         cmd = [
             "uv", "run", "mini-extra", "swebench",
             "--subset", config["subset"],
@@ -151,6 +175,24 @@ def evaluate_agent():
             "--workers", str(config["workers"]),
             "-o", str(agent_out),
         ]
+        """
+
+        agent_config_expr = (
+            "$(uv run python -c \"import minisweagent,os;"
+            "print(os.path.join(os.path.dirname(minisweagent.__file__),"
+            "'config','benchmarks','swebench.yaml'))\" | tail -1)"
+        )
+        inner = (
+            "uv run mini-extra swebench "
+            f"--subset {config['subset']} --split {config['split']} "
+            f"--model {config['model']} --config {agent_config_expr} "
+            f"--workers {config['workers']} -o {agent_out}"
+        )
+        if config.get("task_slice"):
+            inner += f" --slice {config['task_slice']}"
+        cmd = _docker_task_cmd() + ["bash", "-lc", inner]
+
+
         # Optional flags only when set.
         if config.get("task_slice"):
             cmd += ["--slice", config["task_slice"]]

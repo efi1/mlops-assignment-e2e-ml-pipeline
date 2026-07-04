@@ -148,6 +148,14 @@ docker run -d --name minio -p 9000:9000 -p 9001:9001 \
 
 Trigger `evaluate_agent` with, e.g., `{"split":"test","subset":"verified","workers":1,"task_slice":"0:1"}`.
 
+> **⚠️ Important — API key placement.** The Nebius Token Factory key **must** be
+> placed in `~/.config/mini-swe-agent/.env` (as shown above), because the agent reads
+> its credentials from that file. A key placed only in the project `.env`, or exported
+> in the shell alone, is **not** picked up — the agent will fail with a `401
+> AuthenticationError` and silently produce empty patches (so runs "succeed" with a
+> resolve rate of 0). This file lives outside the repository and must never be
+> committed. Under docker-compose it is mounted read-only into the containers.
+
 ## 9. Phase 2 — durability (done)
 
 Two durability mechanisms:
@@ -225,3 +233,43 @@ end to end, and only then hardening it into containers was intentional — it is
 failures at each stage (the containerized run in Phase 3 was far easier to debug
 because the pipeline logic was already known-good) and mirrors how such a system would
 be developed in practice.
+
+## 12. Limitations and cleaner alternatives
+
+The Phase 3 solution meets the assignment's requirements but is, by construction,
+fairly cumbersome: it stacks four layers of Docker (compose services → the Airflow
+container → per-step task containers → per-instance SWE-bench containers) and relies
+on a few pragmatic mechanisms that a production system would improve on. Being explicit
+about them:
+
+- **Docker socket mount (Docker-outside-of-Docker).** Mounting `/var/run/docker.sock`
+  gives the containers host-Docker (effectively host-root) access. Fine for a
+  single-tenant course VM, but unacceptable in a shared/multi-tenant setting. The
+  production alternative — which the assignment itself notes — is
+  `KubernetesPodOperator`, running each step as an isolated pod with proper RBAC and no
+  socket sharing.
+
+- **Implicit key file.** The agent reads its credential from
+  `~/.config/mini-swe-agent/.env`, a magic location outside the project. This is
+  fragile and surprising (it caused a silent empty-patch failure during development).
+  A cleaner design passes the secret explicitly via a secrets manager
+  (e.g. Airflow Connections/Variables, or a Vault/KMS integration) rather than a file
+  the tool happens to read.
+
+- **Runtime dependency/config resolution.** Airflow and its providers are installed at
+  container start via `uv tool run --with ...`, and the agent config path is resolved
+  inside the container with a `$(...)` subshell. Both work but add startup cost and
+  fragility. A production image would bake Airflow, the providers, and a fixed config
+  path into purpose-built images, so nothing is resolved at run time.
+
+- **Local/S3 dual coupling.** Data flows through the local run tree and is then copied
+  to S3. A cleaner design would treat object storage as the single source of truth for
+  artifacts, decoupling the pipeline from any one VM's disk entirely.
+
+- **Same image for two roles.** `agent-eval:latest` serves both as the Airflow base and
+  as the task image. Convenient, but conceptually muddy; separate images (an
+  orchestrator image and an execution image) would be cleaner.
+
+None of these undermine the working system — they are the difference between "satisfies
+the assignment" and "production-grade," and are noted here to make that boundary
+explicit.

@@ -35,7 +35,7 @@ services:
     command: >
       bash -lc "mkdir -p /root/airflow &&
       echo '{\"admin\": \"admin\"}' > /root/airflow/simple_auth_manager_passwords.json.generated &&
-      uv tool run --with mlflow apache-airflow standalone"
+      uv tool run --with mlflow --with apache-airflow-providers-docker --with docker apache-airflow standalone"
     environment:
       HOST_PROJECT_ROOT: /home/efov/mlops-assignment-e2e-ml-pipeline
       AIRFLOW_HOME: /root/airflow

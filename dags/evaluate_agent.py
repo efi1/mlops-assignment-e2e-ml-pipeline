@@ -1,45 +1,53 @@
 """Parameterized Airflow DAG: run a coding agent on SWE-bench, evaluate it, log to MLflow.
 
-Pipeline: prepare_run -> run_agent -> run_eval -> summarize_and_log
+Pipeline: prepare_run -> run_agent -> run_eval -> summarize_and_log -> upload_to_s3
+
+Phase 3 (production): run_agent and run_eval run as DockerOperator tasks in the
+provided agent-eval image, for execution isolation. Data flows between tasks
+through the shared run tree on disk (runs/<run-id>/), not via XCom objects --
+the containerized steps write files, the Python steps read them. run_id is
+passed to the DockerOperators via Jinja templating from prepare_run's XCom.
 
 Every experiment value (split, subset, workers, model, task_slice, run_id,
-cost_limit) is a DAG param -- nothing is hardcoded. Each run writes a fully
-self-describing tree under runs/<run-id>/ that can be reproduced from the folder
-alone, and params/metrics/artifact refs are logged to a local MLflow file store.
+cost_limit) is a DAG param -- nothing is hardcoded.
 """
 
 import hashlib
 import json
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.decorators import dag, task
 from airflow.models.param import Param
+from airflow.providers.docker.operators.docker import DockerOperator
+from docker.types import Mount
 
 # ---------------------------------------------------------------------------
 # Paths & configuration
 # ---------------------------------------------------------------------------
-# dags/ lives one level under the project root, same as the starter DAG.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNS_ROOT = PROJECT_ROOT / "runs"
 
-# Local MLflow file store. Single constant -- swap for a sqlite/remote URI later
-# (Phase 3) without touching any logging code below.
-#MLFLOW_TRACKING_URI = f"file:{PROJECT_ROOT / 'mlruns'}"
-#MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}")
-
 MLFLOW_EXPERIMENT = "swebench-agent-eval"
 
-# ---- S3 / object storage (local MinIO now; swap endpoint/creds for Nebius later) ----
+# ---- S3 / object storage ----
 S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "http://localhost:9000")
 S3_BUCKET = os.environ.get("S3_BUCKET", "agent-eval-runs")
 S3_REGION = os.environ.get("S3_REGION", "us-east-1")
 
-# Maps the (subset, split) params to the HuggingFace dataset the eval harness
-# loads. Extend this table if you add subsets/splits.
+# ---- Docker execution (Phase 3) ----
+# HOST_PROJECT_ROOT is the repo path ON THE HOST -- required because DockerOperator
+# talks to the host daemon, so mount sources must be host paths.
+TASK_IMAGE = os.environ.get("TASK_IMAGE", "agent-eval:latest")
+HOST_PROJECT_ROOT = os.environ.get("HOST_PROJECT_ROOT", str(PROJECT_ROOT))
+HOST_KEY_DIR = os.environ.get("HOST_KEY_DIR", "/home/efov/.config/mini-swe-agent")
+DOCKER_URL = os.environ.get("DOCKER_URL", "unix://var/run/docker.sock")
+# Path the run tree is mounted to inside task containers (matches -o paths below).
+CONTAINER_PROJECT = "/mlops-assignment"
+
 DATASET_BY_SUBSET = {
     "verified": "princeton-nlp/SWE-bench_Verified",
     "lite": "princeton-nlp/SWE-bench_Lite",
@@ -52,27 +60,45 @@ def _run_dir(run_id: str) -> Path:
 
 
 def _uv_env() -> dict:
-    """Environment for subprocesses: inherit everything, keep cost tracking lenient."""
     return {**os.environ, "MSWEA_COST_TRACKING": "ignore_errors"}
 
 
-def _docker_task_cmd() -> list:
-    """docker run prefix for hybrid container-isolated tasks. Volume SOURCE
-    paths are HOST paths (the daemon resolves them on the host via the mounted
-    socket); they are mounted to the same in-container paths the DAG uses so the
-    commands' absolute paths resolve correctly."""
-    image = os.environ.get("TASK_IMAGE", "agent-eval:latest")
-    host_root = os.environ.get("HOST_PROJECT_ROOT", str(PROJECT_ROOT))
+def _task_mounts() -> list:
+    """Mounts shared by the DockerOperator tasks. Sources are HOST paths."""
     return [
-        "docker", "run", "--rm",
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-v", f"{host_root}/runs:/mlops-assignment/runs",
-        "-v", "/home/efov/.config/mini-swe-agent:/root/.config/mini-swe-agent:ro",
-        "-e", f"NEBIUS_API_KEY={os.environ.get('NEBIUS_API_KEY', '')}",
-        "-e", f"MSWEA_COST_TRACKING=ignore_errors",
-        "-w", "/mlops-assignment",
-        image,
+        Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
+        Mount(source=f"{HOST_PROJECT_ROOT}/runs", target=f"{CONTAINER_PROJECT}/runs", type="bind"),
+        Mount(source=HOST_KEY_DIR, target="/root/.config/mini-swe-agent", type="bind", read_only=True),
     ]
+
+
+def _task_env() -> dict:
+    return {
+        "NEBIUS_API_KEY": os.environ.get("NEBIUS_API_KEY", ""),
+        "MSWEA_COST_TRACKING": "ignore_errors",
+    }
+
+
+# Common kwargs for every DockerOperator task.
+_DOCKER_KW = dict(
+    image=TASK_IMAGE,
+    docker_url=DOCKER_URL,
+    network_mode="bridge",
+    auto_remove="success",
+    mount_tmp_dir=False,
+    working_dir=CONTAINER_PROJECT,
+    mounts=_task_mounts(),
+    environment=_task_env(),
+    retries=1,
+    retry_delay=timedelta(minutes=1),
+    execution_timeout=timedelta(minutes=45),
+)
+
+# Default per-task resilience for the Python tasks.
+_DEFAULT_ARGS = dict(
+    retries=2,
+    retry_delay=timedelta(seconds=30),
+)
 
 
 @dag(
@@ -80,37 +106,19 @@ def _docker_task_cmd() -> list:
     start_date=datetime(2024, 1, 1),
     schedule=None,
     catchup=False,
+    default_args=_DEFAULT_ARGS,
     params={
-        # ---- required ----
         "split": Param("test", type="string", description="Dataset split, e.g. test"),
-        "subset": Param(
-            "verified",
-            type="string",
-            enum=["verified", "lite", "full"],
-            description="SWE-bench subset",
-        ),
-        "workers": Param(5, type="integer", minimum=1, description="Parallel workers for agent + eval"),
-        # ---- optional ----
-        "model": Param(
-            "nebius/moonshotai/Kimi-K2.6",
-            type="string",
-            description="LiteLLM model string served via Nebius Token Factory",
-        ),
-        "task_slice": Param(
-            "0:3",
-            type=["null", "string"],
-            description="Instance slice, e.g. '0:3'. Null = whole subset.",
-        ),
-        "run_id": Param(
-            None,
-            type=["null", "string"],
-            description="Explicit run id. If null, one is generated from the timestamp.",
-        ),
-        "cost_limit": Param(
-            0,
-            type="number",
-            description="Per-instance cost limit passed to the agent (0 = unlimited/ignored).",
-        ),
+        "subset": Param("verified", type="string", enum=["verified", "lite", "full"],
+                        description="SWE-bench subset"),
+        "workers": Param(5, type="integer", minimum=1, description="Parallel workers"),
+        "model": Param("nebius/moonshotai/Kimi-K2.6", type="string",
+                       description="LiteLLM model string served via Nebius Token Factory"),
+        "task_slice": Param("0:3", type=["null", "string"],
+                            description="Instance slice, e.g. '0:3'. Null = whole subset."),
+        "run_id": Param(None, type=["null", "string"],
+                        description="Explicit run id. If null, generated from timestamp."),
+        "cost_limit": Param(0, type="number", description="Per-instance cost limit."),
     },
     tags=["mlops", "swebench", "agent-eval"],
 )
@@ -123,12 +131,9 @@ def evaluate_agent():
         run_id = params.get("run_id") or f"run-{datetime.utcnow():%Y%m%d-%H%M%S}"
 
         run_dir = _run_dir(run_id)
-        agent_dir = run_dir / "run-agent"
-        eval_dir = run_dir / "run-eval"
-        for d in (agent_dir, eval_dir):
+        for d in (run_dir / "run-agent", run_dir / "run-eval"):
             d.mkdir(parents=True, exist_ok=True)
 
-        # Resolved config -- the single source of truth for this run.
         config = {
             "run_id": run_id,
             "split": params["split"],
@@ -143,154 +148,105 @@ def evaluate_agent():
         (run_dir / "config.json").write_text(json.dumps(config, indent=2))
         return config
 
-    @task
-    def run_agent(config: dict) -> dict:
-        """Run mini-swe-agent in batch over the configured slice.
+    cfg = prepare_run()
 
-        Reproduces scripts/mini-swe-bench-batch.sh with parameterized flags and
-        output redirected into the run tree. Produces run-agent/preds.json plus
-        per-instance trajectories.
-        """
-        run_dir = _run_dir(config["run_id"])
-        agent_out = run_dir / "run-agent"
+    # Convenience: templated references pulled from prepare_run's XCom.
+    RID = "{{ ti.xcom_pull(task_ids='prepare_run')['run_id'] }}"
+    SUBSET = "{{ ti.xcom_pull(task_ids='prepare_run')['subset'] }}"
+    SPLIT = "{{ ti.xcom_pull(task_ids='prepare_run')['split'] }}"
+    MODEL = "{{ ti.xcom_pull(task_ids='prepare_run')['model'] }}"
+    WORKERS = "{{ ti.xcom_pull(task_ids='prepare_run')['workers'] }}"
+    SLICE = "{{ ti.xcom_pull(task_ids='prepare_run')['task_slice'] }}"
+    DATASET = "{{ ti.xcom_pull(task_ids='prepare_run')['dataset_name'] }}"
 
-        """
-        agent_config = subprocess.run(
-            ["uv", "run", "python", "-c",
-             "import minisweagent, os; "
-             "print(os.path.join(os.path.dirname(minisweagent.__file__), "
-             "'config', 'benchmarks', 'swebench.yaml'))"],
-            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True,
-        ).stdout.splitlines()[-1].strip()
-        """
+    agent_out = f"{CONTAINER_PROJECT}/runs/{RID}/run-agent"
+    eval_out = f"{CONTAINER_PROJECT}/runs/{RID}/run-eval"
+    preds_path = f"{agent_out}/preds.json"
 
+    # ---- run_agent: DockerOperator ----
+    # Resolve the mini-swe-agent config path inside the container (version-proof),
+    # then run the batch agent, writing preds.json + trajectories into the run tree.
+    agent_config_expr = (
+        "$(uv run python -c \"import minisweagent,os;"
+        "print(os.path.join(os.path.dirname(minisweagent.__file__),"
+        "'config','benchmarks','swebench.yaml'))\" | tail -1)"
+    )
+    run_agent = DockerOperator(
+        task_id="run_agent",
+        command=[
+            "bash", "-lc",
+            f"uv run mini-extra swebench "
+            f"--subset {SUBSET} --split {SPLIT} --model {MODEL} "
+            f"--config {agent_config_expr} --workers {WORKERS} -o {agent_out} "
+            f"--slice {SLICE} 2>&1 | tee {agent_out}/run-agent.log",
+        ],
+        **_DOCKER_KW,
+    )
 
-        """
-        cmd = [
-            "uv", "run", "mini-extra", "swebench",
-            "--subset", config["subset"],
-            "--split", config["split"],
-            "--model", config["model"],
-            "--config", agent_config,
-            "--workers", str(config["workers"]),
-            "-o", str(agent_out),
-        ]
-        """
-
-        agent_config_expr = (
-            "$(uv run python -c \"import minisweagent,os;"
-            "print(os.path.join(os.path.dirname(minisweagent.__file__),"
-            "'config','benchmarks','swebench.yaml'))\" | tail -1)"
-        )
-        inner = (
-            "uv run mini-extra swebench "
-            f"--subset {config['subset']} --split {config['split']} "
-            f"--model {config['model']} --config {agent_config_expr} "
-            f"--workers {config['workers']} -o {agent_out}"
-        )
-        if config.get("task_slice"):
-            inner += f" --slice {config['task_slice']}"
-        cmd = _docker_task_cmd() + ["bash", "-lc", inner]
-
-
-        # Optional flags only when set.
-        if config.get("task_slice"):
-            cmd += ["--slice", config["task_slice"]]
-
-        log_path = agent_out / "run-agent.log"
-        with open(log_path, "w") as log:
-            subprocess.run(cmd, cwd=PROJECT_ROOT, env=_uv_env(),
-                           check=True, stdout=log, stderr=subprocess.STDOUT)
-
-        preds_path = agent_out / "preds.json"
-        if not preds_path.exists():
-            raise FileNotFoundError(f"agent did not produce {preds_path}")
-
-        preds = json.loads(preds_path.read_text())
-        n_nonempty = sum(1 for v in preds.values() if v.get("model_patch"))
-        return {
-            "preds_path": str(preds_path),
-            "n_instances": len(preds),
-            "n_patched": n_nonempty,
-        }
+    # ---- run_eval: DockerOperator ----
+    # The harness writes its report to the working dir; cd into the run-eval dir
+    # so the report lands inside the run tree.
+    run_eval = DockerOperator(
+        task_id="run_eval",
+        command=[
+            "bash", "-lc",
+            f"cd {eval_out} && "
+            f"uv run python -m swebench.harness.run_evaluation "
+            f"--dataset_name {DATASET} --split {SPLIT} "
+            f"--predictions_path {preds_path} --max_workers {WORKERS} "
+            f"--run_id {RID} 2>&1 | tee {eval_out}/run-eval.log",
+        ],
+        **_DOCKER_KW,
+    )
 
     @task
-    def run_eval(config: dict, agent_result: dict) -> dict:
-        """Run the SWE-bench harness on the agent's predictions.
-
-        Reproduces scripts/swe-bench-eval.sh with parameterized dataset,
-        predictions path, workers, and run_id (instead of the hardcoded 'test').
-        """
-        run_dir = _run_dir(config["run_id"])
-        eval_out = run_dir / "run-eval"
-
-        cmd = [
-            "uv", "run", "python", "-m", "swebench.harness.run_evaluation",
-            "--dataset_name", config["dataset_name"],
-            "--split", config["split"],
-            "--predictions_path", agent_result["preds_path"],
-            "--max_workers", str(config["workers"]),
-            "--run_id", config["run_id"],
-        ]
-
-        log_path = eval_out / "run-eval.log"
-        with open(log_path, "w") as log:
-            subprocess.run(cmd, cwd=PROJECT_ROOT, env=_uv_env(),
-                           check=True, stdout=log, stderr=subprocess.STDOUT)
-
-        # The harness writes a report json to the project root as
-        # <model>.<run_id>.json (dots in model become underscores). Find it and
-        # copy it into the run tree so the folder is self-contained.
-        report_src = _find_report(config["run_id"])
-        report_dst = eval_out / "report.json"
-        if report_src is not None:
-            report_dst.write_text(report_src.read_text())
-        return {"report_path": str(report_dst) if report_src else None}
-
-    @task
-    def summarize_and_log(config: dict, agent_result: dict, eval_result: dict) -> dict:
-        """Parse the eval report -> metrics.json, write manifest.json, log to MLflow."""
-        import mlflow  # imported here so DAG parsing doesn't require mlflow
+    def summarize_and_log(config: dict) -> dict:
+        """Read preds.json + eval report from the run tree -> metrics.json,
+        manifest.json, and MLflow. (Data comes from disk, not XCom.)"""
+        import mlflow
 
         run_dir = _run_dir(config["run_id"])
+        agent_out_p = run_dir / "run-agent"
+        eval_out_p = run_dir / "run-eval"
 
-        # ---- metrics from the eval report ----
-        metrics = _parse_report(eval_result.get("report_path"))
-        metrics.update({
-            "n_instances": agent_result["n_instances"],
-            "n_patched": agent_result["n_patched"],
-        })
+        # agent-side counts from preds.json
+        preds_file = agent_out_p / "preds.json"
+        n_instances = n_patched = 0
+        if preds_file.exists():
+            preds = json.loads(preds_file.read_text())
+            n_instances = len(preds)
+            n_patched = sum(1 for v in preds.values() if v.get("model_patch"))
 
-        # the harness reports totals across the whole dataset; override with the
-        # actual number of instances this run evaluated
-        metrics["total_instances"] = metrics.get("n_instances", metrics.get("total_instances"))
+        # eval report -- the harness wrote it into run-eval/ (cwd); find it
+        report = _find_report_in(eval_out_p, config["run_id"])
+        report_dst = eval_out_p / "report.json"
+        if report is not None and report != report_dst:
+            report_dst.write_text(report.read_text())
 
-        denom = metrics.get("n_instances") or metrics.get("total_instances")
+        metrics = _parse_report(str(report_dst) if report_dst.exists() else None)
+        metrics.update({"n_instances": n_instances, "n_patched": n_patched})
+        metrics["total_instances"] = n_instances or metrics.get("total_instances")
+        denom = n_instances or metrics.get("total_instances")
         if denom:
             metrics["resolve_rate"] = round(metrics["resolved_instances"] / denom, 4)
-
         (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
-        # ---- manifest: hash every file for reproducibility/provenance ----
         manifest = _build_manifest(run_dir, config)
         (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-        # ---- MLflow ----
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         mlflow.set_experiment(MLFLOW_EXPERIMENT)
         with mlflow.start_run(run_name=config["run_id"]):
-            mlflow.log_params({
-                k: config[k] for k in
-                ("split", "subset", "workers", "model", "task_slice", "cost_limit", "dataset_name")
-            })
+            mlflow.log_params({k: config[k] for k in
+                ("split", "subset", "workers", "model", "task_slice", "cost_limit", "dataset_name")})
             mlflow.log_metrics({k: v for k, v in metrics.items() if isinstance(v, (int, float))})
-            # artifact refs -- the whole run tree is the provenance record
             for name in ("config.json", "metrics.json", "manifest.json"):
                 p = run_dir / name
                 if p.exists():
                     mlflow.log_artifact(str(p))
             mlflow.set_tag("git_sha", manifest.get("git_sha", "unknown"))
         return metrics
+
     @task
     def upload_to_s3(config: dict) -> str:
         """Upload the run tree to S3-compatible storage (Phase 2 durability)."""
@@ -307,36 +263,28 @@ def evaluate_agent():
         )
         return f"s3://{S3_BUCKET}/{config['run_id']}/"
 
-    # ---- wiring ----
-    cfg = prepare_run()
-    agent = run_agent(cfg)
-    ev = run_eval(cfg, agent)
-    summary = summarize_and_log(cfg, agent, ev)
-    upload_to_s3(cfg).set_upstream(summary)
+    summary = summarize_and_log(cfg)
+    up = upload_to_s3(cfg)
+
+    # ---- wiring: prepare -> agent -> eval -> summarize -> upload ----
+    cfg >> run_agent >> run_eval >> summary >> up
 
 
 # ---------------------------------------------------------------------------
-# Helpers (module-level so tasks stay readable)
+# Helpers
 # ---------------------------------------------------------------------------
-def _find_report(run_id: str):
-    """Locate the SWE-bench evaluation report json for this run_id."""
-    candidates = list(PROJECT_ROOT.glob(f"*.{run_id}.json"))
-    if not candidates:
-        # newer swebench versions may nest it; search a couple of common spots
-        candidates = list(PROJECT_ROOT.glob(f"**/*{run_id}*.json"))
-    return candidates[0] if candidates else None
+def _find_report_in(eval_dir: Path, run_id: str):
+    """Locate the SWE-bench report json produced for this run_id (in eval dir)."""
+    for pat in (f"*.{run_id}.json", f"*{run_id}*.json", "report.json"):
+        found = list(eval_dir.glob(pat))
+        if found:
+            return found[0]
+    return None
 
 
 def _parse_report(report_path) -> dict:
-    """Extract resolved/total counts from a SWE-bench report json.
-
-    SWE-bench reports use keys like total_instances, resolved_instances,
-    and lists such as resolved_ids. We defensively handle both count- and
-    list-style fields.
-    """
     if not report_path or not Path(report_path).exists():
         return {"resolved_instances": 0, "total_instances": 0, "report_found": False}
-
     data = json.loads(Path(report_path).read_text())
 
     def _count(count_key, list_key):
@@ -357,13 +305,11 @@ def _parse_report(report_path) -> dict:
 
 
 def _build_manifest(run_dir: Path, config: dict) -> dict:
-    """Walk the run tree, hash every file, capture git sha -- reproducibility record."""
     files = {}
     for p in sorted(run_dir.rglob("*")):
         if p.is_file() and p.name != "manifest.json":
             h = hashlib.sha256(p.read_bytes()).hexdigest()
             files[str(p.relative_to(run_dir))] = {"sha256": h, "bytes": p.stat().st_size}
-
     git_sha = "unknown"
     try:
         git_sha = subprocess.run(
@@ -372,7 +318,6 @@ def _build_manifest(run_dir: Path, config: dict) -> dict:
         ).stdout.strip()
     except Exception:
         pass
-
     return {
         "run_id": config["run_id"],
         "git_sha": git_sha,

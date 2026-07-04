@@ -78,6 +78,18 @@ runs/<run-id>/
 `config.json` freezes the inputs; `manifest.json` hashes every output file and
 records the git commit, so a run is both reproducible and verifiable.
 
+**Reproducing / rerunning by run-id.** Each run's exact inputs are frozen in
+`runs/<run-id>/config.json`. To understand a past run, read that folder — config,
+predictions, per-instance trajectories, the eval report, metrics, and `manifest.json`
+(per-file hashes + git sha) fully describe it, so the folder alone tells the whole
+story. A complete sample of these files can be found under the runs/ folder in the project tree.
+To re-execute, trigger the DAG with the params from that `config.json`: passing
+the same `run_id` reuses the existing run folder, while omitting it generates a fresh
+run-id with identical settings (useful for a side-by-side comparison in MLflow).
+Because the agent uses a sampling-based LLM, the produced patches may differ slightly
+between runs — the pipeline and configuration are reproducible, not the exact model
+output.
+
 ## 5. MLflow tracking
 
 `summarize_and_log` logs to MLflow under the `swebench-agent-eval` experiment:
@@ -234,42 +246,14 @@ failures at each stage (the containerized run in Phase 3 was far easier to debug
 because the pipeline logic was already known-good) and mirrors how such a system would
 be developed in practice.
 
-## 12. Limitations and cleaner alternatives
+## 12. Limitations and possible improvements
 
-The Phase 3 solution meets the assignment's requirements but is, by construction,
-fairly cumbersome: it stacks four layers of Docker (compose services → the Airflow
-container → per-step task containers → per-instance SWE-bench containers) and relies
-on a few pragmatic mechanisms that a production system would improve on. Being explicit
-about them:
+This solution works and meets the requirements, but it ended up fairly heavy — there are four layers of Docker (compose services, the Airflow container, the per-step task containers, and the SWE-bench containers). I wanted to note the main things I'd improve:
 
-- **Docker socket mount (Docker-outside-of-Docker).** Mounting `/var/run/docker.sock`
-  gives the containers host-Docker (effectively host-root) access. Fine for a
-  single-tenant course VM, but unacceptable in a shared/multi-tenant setting. The
-  production alternative — which the assignment itself notes — is
-  `KubernetesPodOperator`, running each step as an isolated pod with proper RBAC and no
-  socket sharing.
+- **Docker socket mount.** To let the containers start other containers, I mounted the host Docker socket, which effectively gives them root access to the host. It's fine on a single-user course VM, but not something you'd want in a shared environment. The assignment mentions `KubernetesPodOperator` as the better option for real isolation.
+- **API key in a file.** The agent reads its key from `~/.config/mini-swe-agent/.env`, which is a bit fragile — it caused a confusing failure during development (empty patches with no obvious error). Passing the secret through something like Airflow Connections or a secrets manager would be cleaner.
+- **Things resolved at runtime.** Airflow and its providers are installed when the container starts, and the agent config path is found with a subshell inside the command. Baking these into the image would be more robust.
+- **Local disk + S3.** Data is written locally and then copied to S3, so the pipeline still depends on the VM's disk. Using object storage as the main storage would decouple it from any single machine.
+- **Hardcoded Airflow login.** The admin password is pinned to `admin/admin` in the compose setup for convenience. Fine on a local single-user VM, but it should be set from a secret or environment variable for any real deployment.
 
-- **Implicit key file.** The agent reads its credential from
-  `~/.config/mini-swe-agent/.env`, a magic location outside the project. This is
-  fragile and surprising (it caused a silent empty-patch failure during development).
-  A cleaner design passes the secret explicitly via a secrets manager
-  (e.g. Airflow Connections/Variables, or a Vault/KMS integration) rather than a file
-  the tool happens to read.
-
-- **Runtime dependency/config resolution.** Airflow and its providers are installed at
-  container start via `uv tool run --with ...`, and the agent config path is resolved
-  inside the container with a `$(...)` subshell. Both work but add startup cost and
-  fragility. A production image would bake Airflow, the providers, and a fixed config
-  path into purpose-built images, so nothing is resolved at run time.
-
-- **Local/S3 dual coupling.** Data flows through the local run tree and is then copied
-  to S3. A cleaner design would treat object storage as the single source of truth for
-  artifacts, decoupling the pipeline from any one VM's disk entirely.
-
-- **Same image for two roles.** `agent-eval:latest` serves both as the Airflow base and
-  as the task image. Convenient, but conceptually muddy; separate images (an
-  orchestrator image and an execution image) would be cleaner.
-
-None of these undermine the working system — they are the difference between "satisfies
-the assignment" and "production-grade," and are noted here to make that boundary
-explicit.
+None of these affected the results here; they're the kind of things I'd want to improve if this were going to run for real.

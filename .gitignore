@@ -16,4 +16,3 @@ runs/
 mlruns/
 *.run-*.json
 
-kill-airflow.sh

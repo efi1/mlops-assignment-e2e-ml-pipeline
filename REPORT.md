@@ -117,8 +117,8 @@ of them actually fix the bug. The mixed result validates that the pipeline corre
 distinguishes resolved from unresolved — the agent attempts, the harness judges, and
 the metrics capture the real outcome. An earlier single-instance smoke run
 (`astropy__astropy-12907`) resolved 1/1, confirming the end-to-end flow first. The
-MLflow runs table across several runs is captured in `docs/screenshots/mlflow-runs.png`,
-and the uploaded run tree in object storage in `docs/screenshots/minio-bucket.png`.
+MLflow runs table across several runs is captured in `docs/screenshots/mlflow_runs.png`,
+and the uploaded run tree in object storage in `docs/screenshots/object_storage_artifacts.png`.
 
 ## 7. Notable issues and fixes
 
@@ -201,13 +201,13 @@ defined in `docker-compose.yaml`, replacing the standalone launch script. MLflow
 runs as a tracking server (`http://mlflow:5000`) and MinIO as S3 storage; the DAG
 reaches them by service name over the compose network. Airflow is built from the
 provided `Dockerfile` (the `agent-eval` image) and mounts the host Docker socket so
-tasks can launch sibling containers. See `docs/screenshots/airflow-services-health.png`.
+tasks can launch sibling containers. See `docs/screenshots/airflow_services_health.png`.
 
 **DockerOperator tasks.** `run_agent` and `run_eval` were converted from direct
 subprocess calls to `DockerOperator` tasks that run in the `agent-eval` image, giving
 each step an isolated execution environment. The Airflow Task Instances view confirms
 their operator type is `DockerOperator` while the lighter steps remain `@task`
-(`docs/screenshots/airflow-dag-dockeroperator-success.png`).
+(`docs/screenshots/airflow_dag.png`).
 
 Because `DockerOperator` does not return Python values the way `@task` functions do,
 inter-task data flows through the shared run tree on disk rather than XCom: the
@@ -221,7 +221,7 @@ artifacts through storage, not by returning large objects through the orchestrat
 container per step; inside it, mini-swe-agent (or the harness) spawns the per-instance
 SWE-bench containers via the mounted socket. All containers are therefore siblings on
 the host daemon rather than truly nested. A mid-run `docker ps`
-(`docs/screenshots/docker-ps-hierarchy.png`) shows the three layers: the three
+(`docs/screenshots/docker_ps_hierarchy.png`) shows the three layers: the three
 long-running compose services, one ephemeral `agent-eval` task container, and the
 per-instance SWE-bench containers it spawned. The socket mount is the standard
 approach for this pattern; its security trade-off (host Docker access) is acceptable

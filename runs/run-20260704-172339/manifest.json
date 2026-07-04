@@ -1,0 +1,126 @@
+{
+  "run_id": "run-20260704-172339",
+  "git_sha": "unknown",
+  "created_at": "2026-07-04T20:12:02.815070Z",
+  "config": {
+    "run_id": "run-20260704-172339",
+    "split": "test",
+    "subset": "verified",
+    "workers": 1,
+    "model": "nebius/moonshotai/Kimi-K2.6",
+    "task_slice": "0:1",
+    "cost_limit": 0,
+    "dataset_name": "princeton-nlp/SWE-bench_Verified",
+    "created_at": "2026-07-04T20:11:26.949112Z"
+  },
+  "files": {
+    "config.json": {
+      "sha256": "243c0cc27323b33dba86de1ffc9981b341c52ba5c8b3e450a878d87170618bf2",
+      "bytes": 281
+    },
+    "metrics.json": {
+      "sha256": "f552af95c7f84aede44c129519f1d507c8b1b875b0b088e1e7c72b51e7fa5e70",
+      "bytes": 224
+    },
+    "run-agent/astropy__astropy-12907/astropy__astropy-12907.traj.json": {
+      "sha256": "dc062d079dc1cca5f3d0648d8fcf9008b645ed651733a0d0093b5effad59d920",
+      "bytes": 323303
+    },
+    "run-agent/astropy__astropy-13033/astropy__astropy-13033.traj.json": {
+      "sha256": "e0a2c41b432eb10ddab53e746caa7b223b30df5a9c33e4550f37a999973df6b0",
+      "bytes": 2188563
+    },
+    "run-agent/astropy__astropy-13236/astropy__astropy-13236.traj.json": {
+      "sha256": "0b12fec046b7fdbca1e110e8164b2a334bdd74799da8641fe5b2fa48df574d67",
+      "bytes": 756592
+    },
+    "run-agent/exit_statuses_1783185829.6865325.yaml": {
+      "sha256": "04d115ab5719402763929fdd7d6dcb7b7656ea9582b3404fd715a581e9812462",
+      "bytes": 128
+    },
+    "run-agent/minisweagent.log": {
+      "sha256": "6f31115c51e3a3270f53997ee22b1c037e9a001b646748aca472297f2ea8915b",
+      "bytes": 2739
+    },
+    "run-agent/preds.json": {
+      "sha256": "636e02ee263e86753d1ab65cbb2fa1cf029ba7a666bcec4bc6a5221161e4ddbd",
+      "bytes": 4513
+    },
+    "run-agent/run-agent.log": {
+      "sha256": "d78fe28b7a0036f7720da38e3a1b17efdd56c90aa1b895d9e15db478c043ae0d",
+      "bytes": 1535
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-12907/eval.sh": {
+      "sha256": "229f462fcbdcae232228507f9491b8538c5aeaeede709c5fc822b586245d9460",
+      "bytes": 2123
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-12907/patch.diff": {
+      "sha256": "0172ca0d430e58fc42e46d478f879e667a9a6e262295d7b49aea68cbc53d5986",
+      "bytes": 504
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-12907/report.json": {
+      "sha256": "fe3f3bddc9631279d3babf7270913070d91e9207c3468bd947823aee3e7b1b86",
+      "bytes": 2123
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-12907/run_instance.log": {
+      "sha256": "083fa96034cadca05fbbdf10c4f7eba23b32f0c3403d11a9d9bff87f1b284b80",
+      "bytes": 4321
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-12907/test_output.txt": {
+      "sha256": "075157d6b826e6d5d1745ac0540b17366a151706aae844a1e8c576a239d0d834",
+      "bytes": 298469
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13033/eval.sh": {
+      "sha256": "2d8ed6487296ccdd232c7aad2d74f7b4eaee05cf732b98c21ec988d308a530ac",
+      "bytes": 1618
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13033/patch.diff": {
+      "sha256": "5eb1ef0da30235bcae8566242013321f231ed4b5a748b858d8f5acfb62cc68f4",
+      "bytes": 1508
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13033/report.json": {
+      "sha256": "8b5425b761eb390cdd57b4286e38758877869337ed8eb95cadc4f25a19c33769",
+      "bytes": 2662
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13033/run_instance.log": {
+      "sha256": "4d0e11675ff60b82c0f0a94773f9900e7d5f9af5e2ad76a45c47b69a2148705c",
+      "bytes": 6747
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13033/test_output.txt": {
+      "sha256": "aa5090c9c63e3feeeb7db3c7a9838fd235db99253317fd30a26b414500db0549",
+      "bytes": 310568
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13236/eval.sh": {
+      "sha256": "b1a543f2a3139bff0b7e2d4a1105a30fe7c969fcd3513d6717500cb2c6ea27d6",
+      "bytes": 4655
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13236/patch.diff": {
+      "sha256": "6a9a495f7fc3b3a9107179fda5c4896e577396e0848c34f5ababa7762efd05d9",
+      "bytes": 1924
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13236/report.json": {
+      "sha256": "95404bc6f7cabeb54d95a276fd83f7f57b78eece837136a335ba3f4db1166209",
+      "bytes": 63349
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13236/run_instance.log": {
+      "sha256": "0f3e3e84602086cda6080c879ea75cacc63bf10e04cc7a33e85fd11b9c132031",
+      "bytes": 55850
+    },
+    "run-eval/logs/run_evaluation/run-20260704-172339/nebius__moonshotai__Kimi-K2.6/astropy__astropy-13236/test_output.txt": {
+      "sha256": "567ad33bd1a75509c2f61cc6359db2a2bcbff9b41a1183ebfe935dc01178deda",
+      "bytes": 360268
+    },
+    "run-eval/nebius__moonshotai__Kimi-K2.6.run-20260704-172339.json": {
+      "sha256": "826abea57e2ea58fa3c42f129cdba32a951c2e4f956e9eaa5709464b8c455466",
+      "bytes": 17366
+    },
+    "run-eval/report.json": {
+      "sha256": "826abea57e2ea58fa3c42f129cdba32a951c2e4f956e9eaa5709464b8c455466",
+      "bytes": 17366
+    },
+    "run-eval/run-eval.log": {
+      "sha256": "d79519f79143d00f524b686716155feaaa32a4bd320384ebe8e304817f738ccd",
+      "bytes": 5468
+    }
+  }
+}

@@ -1,0 +1,17 @@
+👋 This is mini-swe-agent version 2.4.1.
+Check the v2 migration guide at https://klieret.short.gy/mini-v2-migration
+Loading global config from '/root/.config/mini-swe-agent/.env'
+minisweagent: INFO: Results will be saved to                                    
+/mlops-assignment/runs/run-20260704-172339/run-agent                            
+Logging to '/mlops-assignment/runs/run-20260704-172339/run-agent/minisweagent.log'
+minisweagent: INFO: Loading dataset princeton-nlp/SWE-Bench_Verified, split     
+test...                                                                         
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Generating test split:   0%|          | 0/500 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 500/500 [00:00<00:00, 7009.39 examples/s]
+minisweagent: INFO: Instance slice: 500 -> 1 instances                          
+minisweagent: INFO: Skipping 3 existing instances                               
+minisweagent: INFO: Running on 0 instances...                                   
+minisweagent: INFO: Building agent config from specs:                           
+['/mlops-assignment/.venv/lib/python3.14/site-packages/minisweagent/config/bench
+marks/swebench.yaml']                                                           
+⣾ Overall Progress ($0.00) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0/0   0% 0:00:00 

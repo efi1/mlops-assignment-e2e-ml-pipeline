@@ -1,0 +1,11 @@
+{
+  "report_found": true,
+  "total_instances": 3,
+  "resolved_instances": 2,
+  "unresolved_instances": 1,
+  "error_instances": 0,
+  "empty_patch_instances": 0,
+  "n_instances": 3,
+  "n_patched": 3,
+  "resolve_rate": 0.6667
+}

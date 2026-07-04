@@ -87,20 +87,24 @@ tag. The tracking backend is a local SQLite store (`sqlite:///mlflow.db`) — th
 is a single configurable constant, so it can be pointed at a server later without
 changing any logging code.
 
-## 6. Results (smoke run)
+## 6. Results
 
-Single-instance run (`task_slice: "0:1"`) on `astropy__astropy-12907`:
+Three-instance run (`task_slice: "0:3"`, `workers: 3`) on the first three
+SWE-bench Verified astropy instances:
 
 | Metric | Value |
 |--------|-------|
-| Exit status | Submitted |
-| n_instances | 1 |
-| n_patched | 1 |
-| resolved_instances | 1 |
-| resolve_rate | 1.0 |
+| n_instances | 3 |
+| n_patched | 3 |
+| resolved_instances | 2 |
+| unresolved_instances | 1 |
+| resolve_rate | 0.667 |
 
-The agent produced a valid patch and the harness confirmed it fixes the bug (the
-target tests pass). This validated the full pipeline end to end on real cloud infra.
+All three instances produced a patch (no empty patches); the harness confirmed two
+of them actually fix the bug. The mixed result validates that the pipeline correctly
+distinguishes resolved from unresolved — the agent attempts, the harness judges, and
+the metrics capture the real outcome. An earlier single-instance smoke run
+(`astropy__astropy-12907`) resolved 1/1, confirming the end-to-end flow first.
 
 ## 7. Notable issues and fixes
 
@@ -133,15 +137,34 @@ uv sync
 mkdir -p ~/.config/mini-swe-agent
 echo 'NEBIUS_API_KEY=<token-factory-key>' > ~/.config/mini-swe-agent/.env
 ./run-airflow-standalone.sh            # UI on localhost:8080 (reach via SSH tunnel)
+
+# local S3 for Phase 2
+docker run -d --name minio -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  -v ~/minio-data:/data quay.io/minio/minio server /data --console-address ":9001"
 ```
 
 Trigger `evaluate_agent` with, e.g., `{"split":"test","subset":"verified","workers":1,"task_slice":"0:1"}`.
 
-## 9. Phase 2 — durability (planned)
+## 9. Phase 2 — durability (done)
 
-Manifest with file hashes + git sha is already implemented. Remaining: upload the run
-tree to S3-compatible object storage so runs survive VM teardown, and redirect the
-harness report directly into the run folder rather than the project root.
+Two durability mechanisms:
+
+- **Manifest** — `manifest.json` records a sha256 of every file in the run tree plus
+  the git sha, so any archived run is both reproducible and verifiable.
+- **S3 upload** — a fifth task, `upload_to_s3`, walks the run tree and uploads every
+  file to an S3-compatible bucket under a `<run-id>/` prefix, so runs survive VM
+  teardown. It uses boto3 and reads endpoint/bucket/region/credentials from
+  configuration, so the same code targets local storage now and cloud storage later
+  with no change.
+
+Storage backend: a **local MinIO** container (S3-compatible) is used, per course
+guidance that provisioning cloud Object Storage requires admin permissions the class
+accounts do not have. Because MinIO speaks the S3 protocol, switching to Nebius Object
+Storage is purely a matter of changing the endpoint URL and credentials.
+
+Wiring: `upload_to_s3` runs after `summarize_and_log`, so `metrics.json` and
+`manifest.json` exist before the tree is uploaded.
 
 ## 10. Phase 3 — production (planned)
 

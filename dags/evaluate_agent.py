@@ -32,6 +32,11 @@ MLFLOW_TRACKING_URI = f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
 
 MLFLOW_EXPERIMENT = "swebench-agent-eval"
 
+# ---- S3 / object storage (local MinIO now; swap endpoint/creds for Nebius later) ----
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "http://localhost:9000")
+S3_BUCKET = os.environ.get("S3_BUCKET", "agent-eval-runs")
+S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+
 # Maps the (subset, split) params to the HuggingFace dataset the eval harness
 # loads. Extend this table if you add subsets/splits.
 DATASET_BY_SUBSET = {
@@ -244,12 +249,28 @@ def evaluate_agent():
                     mlflow.log_artifact(str(p))
             mlflow.set_tag("git_sha", manifest.get("git_sha", "unknown"))
         return metrics
+    @task
+    def upload_to_s3(config: dict) -> str:
+        """Upload the run tree to S3-compatible storage (Phase 2 durability)."""
+        run_dir = _run_dir(config["run_id"])
+        env = {
+            **_uv_env(),
+            "AWS_ACCESS_KEY_ID": os.environ.get("S3_ACCESS_KEY", "minioadmin"),
+            "AWS_SECRET_ACCESS_KEY": os.environ.get("S3_SECRET_KEY", "minioadmin"),
+        }
+        subprocess.run(
+            ["uv", "run", "python", "scripts/s3_upload.py",
+             str(run_dir), S3_BUCKET, S3_ENDPOINT_URL, S3_REGION],
+            cwd=PROJECT_ROOT, env=env, check=True,
+        )
+        return f"s3://{S3_BUCKET}/{config['run_id']}/"
 
     # ---- wiring ----
     cfg = prepare_run()
     agent = run_agent(cfg)
     ev = run_eval(cfg, agent)
-    summarize_and_log(cfg, agent, ev)
+    summary = summarize_and_log(cfg, agent, ev)
+    upload_to_s3(cfg).set_upstream(summary)
 
 
 # ---------------------------------------------------------------------------

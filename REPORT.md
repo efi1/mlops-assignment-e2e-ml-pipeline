@@ -104,7 +104,9 @@ All three instances produced a patch (no empty patches); the harness confirmed t
 of them actually fix the bug. The mixed result validates that the pipeline correctly
 distinguishes resolved from unresolved — the agent attempts, the harness judges, and
 the metrics capture the real outcome. An earlier single-instance smoke run
-(`astropy__astropy-12907`) resolved 1/1, confirming the end-to-end flow first.
+(`astropy__astropy-12907`) resolved 1/1, confirming the end-to-end flow first. The
+MLflow runs table across several runs is captured in `docs/screenshots/mlflow-runs.png`,
+and the uploaded run tree in object storage in `docs/screenshots/minio-bucket.png`.
 
 ## 7. Notable issues and fixes
 
@@ -166,8 +168,60 @@ Storage is purely a matter of changing the endpoint URL and credentials.
 Wiring: `upload_to_s3` runs after `summarize_and_log`, so `metrics.json` and
 `manifest.json` exist before the tree is uploaded.
 
-## 10. Phase 3 — production (planned)
+Each run is therefore persisted in two places: the local `runs/<run-id>/` tree (for
+immediate inspection and reproducibility) and the S3 bucket (for durability beyond the
+VM's lifetime). The two hold identical content, keyed by run-id.
 
-Move Airflow and MLflow into `docker-compose` as services, switch `run_agent` /
-`run_eval` to `DockerOperator` for execution isolation, and add retries/timeouts.
-Screenshots of the Airflow graph and MLflow run to be included.
+## 10. Phase 3 — production (done)
+
+Three production improvements were made.
+
+**docker-compose services.** Airflow, MLflow, and MinIO now run as containers
+defined in `docker-compose.yaml`, replacing the standalone launch script. MLflow
+runs as a tracking server (`http://mlflow:5000`) and MinIO as S3 storage; the DAG
+reaches them by service name over the compose network. Airflow is built from the
+provided `Dockerfile` (the `agent-eval` image) and mounts the host Docker socket so
+tasks can launch sibling containers. See `docs/screenshots/airflow-services-health.png`.
+
+**DockerOperator tasks.** `run_agent` and `run_eval` were converted from direct
+subprocess calls to `DockerOperator` tasks that run in the `agent-eval` image, giving
+each step an isolated execution environment. The Airflow Task Instances view confirms
+their operator type is `DockerOperator` while the lighter steps remain `@task`
+(`docs/screenshots/airflow-dag-dockeroperator-success.png`).
+
+Because `DockerOperator` does not return Python values the way `@task` functions do,
+inter-task data flows through the shared run tree on disk rather than XCom: the
+containerized steps write `preds.json` and the eval report into `runs/<run-id>/`, and
+the downstream Python tasks read those files. The `run_id` and other parameters are
+passed into the DockerOperator commands via Jinja templating from `prepare_run`'s
+XCom. This is a deliberate, production-realistic choice — real pipelines pass
+artifacts through storage, not by returning large objects through the orchestrator.
+
+**Execution model (Docker-outside-of-Docker).** The DockerOperator creates one task
+container per step; inside it, mini-swe-agent (or the harness) spawns the per-instance
+SWE-bench containers via the mounted socket. All containers are therefore siblings on
+the host daemon rather than truly nested. A mid-run `docker ps`
+(`docs/screenshots/docker-ps-hierarchy.png`) shows the three layers: the three
+long-running compose services, one ephemeral `agent-eval` task container, and the
+per-instance SWE-bench containers it spawned. The socket mount is the standard
+approach for this pattern; its security trade-off (host Docker access) is acceptable
+for a single-tenant course environment.
+
+**Retries and timeouts.** DockerOperator tasks get one retry and a 45-minute
+execution timeout; the Python tasks get two retries via `default_args`.
+
+**Side benefit — clean working directory.** In Phases 1–2 the SWE-bench harness ran
+with its working directory at the project root, so it left a redundant report copy
+(`<model>.<run-id>.json`) there after every run. In Phase 3 the harness runs inside
+the task container with its working directory set to `runs/<run-id>/run-eval/`, so the
+report is written directly into the run tree and nothing is left at the project root.
+
+## 11. Phase progression (design note)
+
+The pipeline was built in the order the assignment prescribes: a working Python/Bash
+DAG first (Phase 1), then durability (Phase 2), then production isolation (Phase 3).
+The commit history reflects this arc. Building the simple version first, proving it
+end to end, and only then hardening it into containers was intentional — it isolated
+failures at each stage (the containerized run in Phase 3 was far easier to debug
+because the pipeline logic was already known-good) and mirrors how such a system would
+be developed in practice.

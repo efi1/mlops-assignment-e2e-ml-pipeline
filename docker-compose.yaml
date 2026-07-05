@@ -56,7 +56,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./dags:/mlops-assignment/dags
       - ./runs:/mlops-assignment/runs
-      - ~/.config/mini-swe-agent:/root/.config/mini-swe-agent:ro
     depends_on:
       - minio
       - mlflow

@@ -82,7 +82,7 @@ records the git commit, so a run is both reproducible and verifiable.
 `runs/<run-id>/config.json`. To understand a past run, read that folder — config,
 predictions, per-instance trajectories, the eval report, metrics, and `manifest.json`
 (per-file hashes + git sha) fully describe it, so the folder alone tells the whole
-story. A complete sample of these files can be found under the runs/ folder in the project tree.
+story. A complete sample run is committed under `runs/run-20260704-172339/` (3 instances, 2 resolved) for inspection.
 To re-execute, trigger the DAG with the params from that `config.json`: passing
 the same `run_id` reuses the existing run folder, while omitting it generates a fresh
 run-id with identical settings (useful for a side-by-side comparison in MLflow).
@@ -117,8 +117,8 @@ of them actually fix the bug. The mixed result validates that the pipeline corre
 distinguishes resolved from unresolved — the agent attempts, the harness judges, and
 the metrics capture the real outcome. An earlier single-instance smoke run
 (`astropy__astropy-12907`) resolved 1/1, confirming the end-to-end flow first. The
-MLflow runs table across several runs is captured in `docs/screenshots/mlflow_runs.png`,
-and the uploaded run tree in object storage in `docs/screenshots/object_storage_artifacts.png`.
+MLflow runs table across several runs is captured in `screenshots/mlflow_runs.png`,
+and the uploaded run tree in object storage in `screenshots/object_storage_artifacts.png`.
 
 ## 7. Notable issues and fixes
 
@@ -131,11 +131,13 @@ and the uploaded run tree in object storage in `docs/screenshots/object_storage_
   `uv run`; mlflow was additionally made available to Airflow via `--with mlflow`.
 - **MLflow file store deprecated.** MLflow 3.x rejects the file store; switched the
   tracking URI to SQLite.
-- **Nebius authentication.** The agent reads its key from
-  `~/.config/mini-swe-agent/.env`. The Token Factory API key must be placed there (a
-  key in the project `.env` or shell alone was not picked up). This was the single
-  biggest gotcha — a fresh clone must set this file or the agent fails with a 401
-  AuthenticationError and produces empty patches.
+- **Nebius authentication.** During development the agent failed with a 401
+  AuthenticationError and silently produced empty patches, because the API key never
+  reached the agent process. The initial fix was placing the key in
+  `~/.config/mini-swe-agent/.env`, which the agent reads directly. Later testing
+  showed that in the containerized setup this file isn't needed at all — the key is
+  delivered as an environment variable (project `.env` → compose → task containers),
+  so setup is just `cp .env.example .env` with the real key.
 - **resolve_rate denominator.** The harness report's `total_instances` counts the whole
   dataset (500), not the slice. `resolve_rate` is computed against the actual number of
   instances run (`n_instances`) so the rate is honest.
@@ -148,25 +150,24 @@ curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER && newgr
 curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env
 git clone <repo> && cd mlops-assignment-e2e-ml-pipeline
 uv sync
-mkdir -p ~/.config/mini-swe-agent
-echo 'NEBIUS_API_KEY=<token-factory-key>' > ~/.config/mini-swe-agent/.env
-./run-airflow-standalone.sh            # UI on localhost:8080 (reach via SSH tunnel)
+cp .env.example .env      # then edit .env and set your real NEBIUS_API_KEY
 
-# local S3 for Phase 2
-docker run -d --name minio -p 9000:9000 -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  -v ~/minio-data:/data quay.io/minio/minio server /data --console-address ":9001"
+docker compose up -d      # Airflow (8080), MLflow (5000), MinIO (9000 API / 9001 console)
 ```
+
+The UIs are reachable via an SSH tunnel from your machine:
+`ssh -L 8080:localhost:8080 -L 5000:localhost:5000 -L 9001:localhost:9001 <user>@<vm-ip>`.
+Airflow login is `admin` / `admin`.
 
 Trigger `evaluate_agent` with, e.g., `{"split":"test","subset":"verified","workers":1,"task_slice":"0:1"}`.
 
-> **⚠️ Important — API key placement.** The Nebius Token Factory key **must** be
-> placed in `~/.config/mini-swe-agent/.env` (as shown above), because the agent reads
-> its credentials from that file. A key placed only in the project `.env`, or exported
-> in the shell alone, is **not** picked up — the agent will fail with a `401
-> AuthenticationError` and silently produce empty patches (so runs "succeed" with a
-> resolve rate of 0). This file lives outside the repository and must never be
-> committed. Under docker-compose it is mounted read-only into the containers.
+> **⚠️ API key.** Put your Nebius Token Factory key in the project `.env`
+> (`cp .env.example .env`, then edit). Docker Compose reads this file automatically
+> and passes the key into the containers as an environment variable — no other setup
+> is needed. The `.env` file is gitignored and must never be committed.
+> Only when running the agent *outside* Docker (standalone on the host) does it
+> additionally need the key in `~/.config/mini-swe-agent/.env`, since the agent reads
+> that file itself in host-side runs.
 
 ## 9. Phase 2 — durability (done)
 
@@ -201,13 +202,13 @@ defined in `docker-compose.yaml`, replacing the standalone launch script. MLflow
 runs as a tracking server (`http://mlflow:5000`) and MinIO as S3 storage; the DAG
 reaches them by service name over the compose network. Airflow is built from the
 provided `Dockerfile` (the `agent-eval` image) and mounts the host Docker socket so
-tasks can launch sibling containers. See `docs/screenshots/airflow_services_health.png`.
+tasks can launch sibling containers. See `screenshots/airflow_services_health.png`.
 
 **DockerOperator tasks.** `run_agent` and `run_eval` were converted from direct
 subprocess calls to `DockerOperator` tasks that run in the `agent-eval` image, giving
 each step an isolated execution environment. The Airflow Task Instances view confirms
 their operator type is `DockerOperator` while the lighter steps remain `@task`
-(`docs/screenshots/airflow_dag.png`).
+(`screenshots/airflow_dag.png`).
 
 Because `DockerOperator` does not return Python values the way `@task` functions do,
 inter-task data flows through the shared run tree on disk rather than XCom: the
@@ -221,7 +222,7 @@ artifacts through storage, not by returning large objects through the orchestrat
 container per step; inside it, mini-swe-agent (or the harness) spawns the per-instance
 SWE-bench containers via the mounted socket. All containers are therefore siblings on
 the host daemon rather than truly nested. A mid-run `docker ps`
-(`docs/screenshots/docker_ps_hierarchy.png`) shows the three layers: the three
+(`screenshots/docker_ps_hierarchy.png`) shows the three layers: the three
 long-running compose services, one ephemeral `agent-eval` task container, and the
 per-instance SWE-bench containers it spawned. The socket mount is the standard
 approach for this pattern; its security trade-off (host Docker access) is acceptable
@@ -251,7 +252,7 @@ be developed in practice.
 This solution works and meets the requirements, but it ended up fairly heavy — there are four layers of Docker (compose services, the Airflow container, the per-step task containers, and the SWE-bench containers). I wanted to note the main things I'd improve:
 
 - **Docker socket mount.** To let the containers start other containers, I mounted the host Docker socket, which effectively gives them root access to the host. It's fine on a single-user course VM, but not something you'd want in a shared environment. The assignment mentions `KubernetesPodOperator` as the better option for real isolation.
-- **API key in a file.** The agent reads its key from `~/.config/mini-swe-agent/.env`, which is a bit fragile — it caused a confusing failure during development (empty patches with no obvious error). Passing the secret through something like Airflow Connections or a secrets manager would be cleaner.
+- **API key in a file (resolved for the Docker path).** The agent can read its key from `~/.config/mini-swe-agent/.env`, which originally required a manual setup step and caused a confusing failure during development (empty patches with no obvious error). Testing showed the containerized pipeline doesn't need that file at all — the key is passed as an environment variable, from the project `.env` through compose into the task containers. The config file is only needed when running the agent outside Docker.
 - **Things resolved at runtime.** Airflow and its providers are installed when the container starts, and the agent config path is found with a subshell inside the command. Baking these into the image would be more robust.
 - **Local disk + S3.** Data is written locally and then copied to S3, so the pipeline still depends on the VM's disk. Using object storage as the main storage would decouple it from any single machine.
 - **Hardcoded Airflow login.** The admin password is pinned to `admin/admin` in the compose setup for convenience. Fine on a local single-user VM, but it should be set from a secret or environment variable for any real deployment.

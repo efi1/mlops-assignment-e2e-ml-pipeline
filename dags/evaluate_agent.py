@@ -68,7 +68,6 @@ def _task_mounts() -> list:
     return [
         Mount(source="/var/run/docker.sock", target="/var/run/docker.sock", type="bind"),
         Mount(source=f"{HOST_PROJECT_ROOT}/runs", target=f"{CONTAINER_PROJECT}/runs", type="bind"),
-        Mount(source=HOST_KEY_DIR, target="/root/.config/mini-swe-agent", type="bind", read_only=True),
     ]
 
 
